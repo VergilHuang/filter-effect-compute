@@ -1,9 +1,9 @@
 # CODEBASE_KNOWLEDGE.md
 
-> 自動生成於：2026-04-14 21:13
-> 生成工具：frontend-codebase-analyzer skill
-> 職責範疇：僅涵蓋前端層（UI / 路由 / 狀態管理 / 樣式）
-> ⚠️ 此文件為靜態快照，不會自動同步程式碼變更，請於重大架構調整後重新執行 skill。
+> 自動生成於：2026-04-14 23:22
+> 生成工具：Antigravity AI Agent
+> 職責範疇：涵蓋前端層、Wasm 運算層與多執行緒策略
+> ⚠️ 此文件為靜態快照，不會自動同步程式碼變更，請於重大架構調整後重新執行更新。
 
 ---
 
@@ -47,8 +47,14 @@ d:/projects/filter-effect-compute/
 │   │   └── useWorkerPool.ts     # 工作池管理
 │   └── app.vue           # 應用程式入口
 ├── public/               # 公開靜態資源
-│   └── workers/          # Web Workers 指令集
-│       └── processor.worker.js # 影像處理 Worker
+│   ├── wasm/             # WebAssembly 編譯產物
+│   │   ├── processor.js  # Emscripten 膠水程式碼
+│   │   └── processor.wasm# Wasm 二進位檔
+│   └── workers/          # Web Workers 腳本
+│       └── processor.worker.js # 呼叫 Wasm 的 Worker
+├── src/                  # 原始碼
+│   └── wasm/             # C++ 影像處理原始碼
+│       └── processor.cpp # 核心濾鏡演算法
 ├── docs/                 # 專案文檔
 │   └── knowledge/       # 知識庫
 └── nuxt.config.ts        # Nuxt 核心設定
@@ -132,8 +138,9 @@ pnpm generate      # 靜態站點生成 (SSG)
 
 ## 10. 已知前端問題與技術債
 
-- [ ] ⚠️ 效能問題：超大解析度圖片處理時可能導致 Worker 記憶體壓力。
-- [ ] ⚠️ 待實作：目前濾鏡效果主要在 JS 端進行分模塊模擬，未來需強化 Wasm 端的 C++ 實作。
+- [ ] ⚠️ 效能問題：超大解析度圖片處理時可能導致 Worker 記憶體壓力（雖具備自動釋放機制，但峰值需監控）。
+- [x] ✅ 已實作：WebAssembly (C++) 影像處理核心與平行運算。
+- [x] ✅ 已修正：多執行緒運算導致的高斯模糊區塊痕跡問題（透過 Halo Region 策略）。
 - [ ] ⚠️ 回退機制：目前若瀏覽器不支援 `SharedArrayBuffer` 會直接報錯，需增加友善提示。
 
 ---
@@ -143,6 +150,7 @@ pnpm generate      # 靜態站點生成 (SSG)
 - **SSR vs CSR 策略**：全站強制 `ssr: false`。因為影像處理需要大量的瀏覽器層級 API (Canvas, Workers, SAB)，無法在伺服器端預渲染。
 - **狀態管理選型理由**：因為專案邏輯主要與 Canvas 及 Worker 互動，使用 Composable 原生封裝狀態比 Pinia 更具靈活性。
 - **Vite 插件整合**：使用 `@tailwindcss/vite` 整合 Tailwind v4，確保快速的 HMR 體驗。
+- **影像處理策略 (Halo Region)**：為了解決多執行緒分區運算導致的卷積濾鏡（如高斯模糊）邊界斷層，實作了 Halo Region 策略。Worker 在處理指定區段時會主動擴展讀取相鄰區域像素，確保卷積運算在邊界處依然具備完整的鄰域資訊。
 
 ---
 

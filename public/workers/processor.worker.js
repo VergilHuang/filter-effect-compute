@@ -1,20 +1,42 @@
 /**
  * processor.worker.js
- * Image filter worker — reads from inputSab, writes to outputSab.
- * Partition: each worker owns [startRow, endRow) exclusively for writes.
- * Reads span the full image (kernel neighborhood access is safe — no write conflict).
- *
- * Progress is reported via Atomics.add on a shared Int32Array (progressSab).
- * Each worker increments its counter per row processed; main thread polls the sum.
+ * Image filter worker — Uses WebAssembly (loaded via processor.js) to compute logic.
+ * Reads from inputSab, copies to Wasm Memory, computes, writes to outputSab.
+ * Implements "Halo Region" memory mapping to eliminate border artifacts.
  */
 
 'use strict';
+
+self.wasmReady = false;
+
+self.Module = {
+  // Correctly locate the WASM file instead of using worker relative path
+  locateFile: function(path) {
+    if (path.endsWith('.wasm')) {
+      return '/wasm/' + path;
+    }
+    return path;
+  },
+  onRuntimeInitialized: function() {
+    self.wasmReady = true;
+  }
+};
+
+// Import the generated Wasm glue code
+importScripts('/wasm/processor.js');
 
 self.onmessage = function (e) {
   const { type, payload } = e.data;
 
   if (type === 'init') {
-    self.postMessage({ type: 'ready' });
+    const checkReady = () => {
+      if (self.wasmReady) {
+        self.postMessage({ type: 'ready' });
+      } else {
+        setTimeout(checkReady, 50);
+      }
+    };
+    checkReady();
     return;
   }
 
@@ -27,315 +49,116 @@ self.onmessage = function (e) {
       progressSab, workerIndex,
     } = payload;
 
-    const src = new Uint8ClampedArray(inputSab);
-    const dst = new Uint8ClampedArray(outputSab);
     const prog = new Int32Array(progressSab);
-    const totalRows = endRow - startRow;
+    
+    // Determine the halo region (Padding) needed
+    let halo = 0;
+    if (filter === 'gaussian-blur') {
+      halo = (params.radius | 0);
+    } else if (filter === 'sharpen' || filter === 'edge-detection' || filter === 'emboss') {
+      halo = 1; // 3x3 kernel needs 1 extra pixel
+    }
+    
+    // We want to process rows from `activeStartRow` to `activeEndRow` (Halo Strategy)
+    const activeStartRow = Math.max(0, startRow - halo);
+    const activeEndRow = Math.min(height, endRow + halo);
+    const activeRows = activeEndRow - activeStartRow;
+    
+    // Total byte capacity required for the image to map absolute coordinates
+    const totalBytes = width * height * 4;
+    
+    // Malloc memory natively via Wasm. 
+    const ptrSrc = Module._malloc(totalBytes);
+    const ptrDst = Module._malloc(totalBytes);
+    let ptrTmp = null;
+    if (filter === 'gaussian-blur') {
+      ptrTmp = Module._malloc(totalBytes);
+    }
 
     try {
+      // 1. Copy the active bounding box from inputSAB to WASM memory
+      const startIndex = activeStartRow * width * 4;
+      const endIndex = activeEndRow * width * 4;
+      
+      const srcInput = new Uint8ClampedArray(inputSab, startIndex, endIndex - startIndex);
+      HEAPU8.set(srcInput, ptrSrc + startIndex);
+      
+      // 2. Call the correct WASM function
       switch (filter) {
         case 'gaussian-blur':
-          applyGaussianBlur(src, dst, width, height, startRow, endRow, params.radius | 0, prog, workerIndex, totalRows);
+          Module.ccall('applyGaussianBlur', null, 
+            ['number','number','number','number','number','number','number','number'],
+            [ptrSrc, ptrDst, ptrTmp, width, height, activeStartRow, activeEndRow, params.radius | 0]
+          );
           break;
         case 'edge-detection':
-          applyEdgeDetection(src, dst, width, height, startRow, endRow, prog, workerIndex, totalRows);
+          Module.ccall('applyEdgeDetection', null,
+            ['number','number','number','number','number','number'],
+            [ptrSrc, ptrDst, width, height, startRow, endRow]
+          );
           break;
         case 'sharpen':
-          applySharpen(src, dst, width, height, startRow, endRow, params.strength, prog, workerIndex, totalRows);
+          Module.ccall('applySharpen', null,
+             ['number','number','number','number','number','number','number'],
+             [ptrSrc, ptrDst, width, height, startRow, endRow, params.strength]
+          );
           break;
         case 'grayscale':
-          applyGrayscale(src, dst, width, height, startRow, endRow, prog, workerIndex, totalRows);
+          Module.ccall('applyGrayscale', null,
+            ['number','number','number','number','number','number'],
+            [ptrSrc, ptrDst, width, height, startRow, endRow]
+          );
           break;
         case 'invert':
-          applyInvert(src, dst, width, height, startRow, endRow, prog, workerIndex, totalRows);
+           Module.ccall('applyInvert', null,
+            ['number','number','number','number','number','number'],
+            [ptrSrc, ptrDst, width, height, startRow, endRow]
+          );
           break;
         case 'brightness-contrast':
-          applyBrightnessContrast(src, dst, width, height, startRow, endRow, params.brightness, params.contrast, prog, workerIndex, totalRows);
+          Module.ccall('applyBrightnessContrast', null,
+            ['number','number','number','number','number','number','number','number'],
+            [ptrSrc, ptrDst, width, height, startRow, endRow, params.brightness, params.contrast]
+          );
           break;
         case 'pixelate':
-          applyPixelate(src, dst, width, height, startRow, endRow, params.blockSize | 0, prog, workerIndex, totalRows);
+          Module.ccall('applyPixelate', null,
+            ['number','number','number','number','number','number','number'],
+            [ptrSrc, ptrDst, width, height, startRow, endRow, params.blockSize | 0]
+          );
           break;
         case 'emboss':
-          applyEmboss(src, dst, width, height, startRow, endRow, prog, workerIndex, totalRows);
+          Module.ccall('applyEmboss', null,
+             ['number','number','number','number','number','number'],
+             [ptrSrc, ptrDst, width, height, startRow, endRow]
+          );
           break;
         default:
-          // passthrough copy
-          for (let y = startRow; y < endRow; y++) {
-            for (let x = 0; x < width; x++) {
-              const i = (y * width + x) * 4;
-              dst[i] = src[i]; dst[i+1] = src[i+1]; dst[i+2] = src[i+2]; dst[i+3] = src[i+3];
-            }
+          {
+            const dstOutput = new Uint8ClampedArray(outputSab, startRow * width * 4, (endRow - startRow) * width * 4);
+            const srcCopy = new Uint8ClampedArray(inputSab, startRow * width * 4, (endRow - startRow) * width * 4);
+            dstOutput.set(srcCopy);
           }
       }
+
+      // 3. Extract the computed block (the tight boundaries `startRow` to `endRow`!)
+      if (filter !== 'default') {
+          const resultStartIndex = startRow * width * 4;
+          const resultEndIndex = endRow * width * 4;
+          const res = HEAPU8.subarray(ptrDst + resultStartIndex, ptrDst + resultEndIndex);
+          const outBuffer = new Uint8ClampedArray(outputSab, resultStartIndex, resultEndIndex - resultStartIndex);
+          outBuffer.set(res);
+      }
+      
+      Atomics.store(prog, workerIndex, 100);
       self.postMessage({ type: 'done', workerIndex });
     } catch (err) {
       self.postMessage({ type: 'error', workerIndex, message: err.message });
+    } finally {
+      // 4. FREE memory instantly!
+      Module._free(ptrSrc);
+      Module._free(ptrDst);
+      if (ptrTmp) Module._free(ptrTmp);
     }
   }
 };
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-function idx(x, y, width) {
-  return (y * width + x) * 4;
-}
-
-function clamp(v, lo, hi) {
-  return v < lo ? lo : v > hi ? hi : v;
-}
-
-function reportProgress(prog, workerIndex, row, totalRows) {
-  // Write per-worker progress (0–100) to its slot
-  const pct = Math.round(((row + 1) / totalRows) * 100);
-  Atomics.store(prog, workerIndex, pct);
-}
-
-// ─── Gaussian Blur (separable box-blur approximation, 3 passes) ───────────
-
-function boxBlurH(src, dst, width, height, startRow, endRow, radius) {
-  const iarr = 1 / (radius + radius + 1);
-  for (let y = startRow; y < endRow; y++) {
-    for (let ch = 0; ch < 3; ch++) {
-      let ti = idx(0, y, width) + ch;
-      let li = ti;
-      let ri = ti + radius * 4;
-      const fv = src[ti];
-      const lv = src[idx(width - 1, y, width) + ch];
-      let val = (radius + 1) * fv;
-      for (let j = 0; j < radius; j++) val += src[ti + j * 4];
-      for (let x = 0; x <= radius; x++) {
-        val += src[ri] - fv;
-        dst[ti] = Math.round(val * iarr);
-        ri += 4; ti += 4;
-      }
-      for (let x = radius + 1; x < width - radius; x++) {
-        val += src[ri] - src[li];
-        dst[ti] = Math.round(val * iarr);
-        li += 4; ri += 4; ti += 4;
-      }
-      for (let x = width - radius; x < width; x++) {
-        val += lv - src[li];
-        dst[ti] = Math.round(val * iarr);
-        li += 4; ti += 4;
-      }
-    }
-    // copy alpha
-    for (let x = 0; x < width; x++) {
-      const i = idx(x, y, width);
-      dst[i + 3] = src[i + 3];
-    }
-  }
-}
-
-function boxBlurV(src, dst, width, height, startRow, endRow, radius) {
-  const iarr = 1 / (radius + radius + 1);
-  for (let x = 0; x < width; x++) {
-    for (let ch = 0; ch < 3; ch++) {
-      let ti = idx(x, startRow, width) + ch;
-      let li = ti;
-      let ri = ti + radius * width * 4;
-      const fv = src[idx(x, startRow, width) + ch];
-      const lv = src[idx(x, endRow - 1, width) + ch];
-      let val = (radius + 1) * fv;
-      for (let j = 0; j < radius; j++) val += src[idx(x, Math.min(startRow + j, endRow - 1), width) + ch];
-      for (let y = startRow; y <= Math.min(startRow + radius, endRow - 1); y++) {
-        val += (ri < src.length ? src[ri] : lv) - fv;
-        dst[ti] = Math.round(val * iarr);
-        ri += width * 4; ti += width * 4;
-      }
-      for (let y = startRow + radius + 1; y < endRow - radius; y++) {
-        val += src[ri] - src[li];
-        dst[ti] = Math.round(val * iarr);
-        li += width * 4; ri += width * 4; ti += width * 4;
-      }
-      for (let y = Math.max(endRow - radius, startRow + radius + 1); y < endRow; y++) {
-        val += lv - src[li];
-        dst[ti] = Math.round(val * iarr);
-        li += width * 4; ti += width * 4;
-      }
-    }
-  }
-}
-
-function applyGaussianBlur(src, dst, width, height, startRow, endRow, radius, prog, workerIndex, totalRows) {
-  radius = clamp(radius, 1, 50);
-  const passes = 3;
-  // Use a temp buffer for the separable passes
-  const tmp = new Uint8ClampedArray(src.length);
-
-  // Init dst from src for this region
-  for (let y = startRow; y < endRow; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = idx(x, y, width);
-      dst[i] = src[i]; dst[i+1] = src[i+1]; dst[i+2] = src[i+2]; dst[i+3] = src[i+3];
-    }
-  }
-
-  for (let pass = 0; pass < passes; pass++) {
-    // H pass: dst → tmp
-    boxBlurH(dst, tmp, width, height, startRow, endRow, radius);
-    // V pass: tmp → dst
-    boxBlurV(tmp, dst, width, height, startRow, endRow, radius);
-    reportProgress(prog, workerIndex, pass * (totalRows / passes) | 0, totalRows);
-  }
-  reportProgress(prog, workerIndex, totalRows - 1, totalRows);
-}
-
-// ─── Edge Detection (Sobel) ─────────────────────────────────────────────────
-
-function applyEdgeDetection(src, dst, width, height, startRow, endRow, prog, workerIndex, totalRows) {
-  for (let y = startRow; y < endRow; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = idx(x, y, width);
-
-      if (x === 0 || x === width - 1 || y === 0 || y === height - 1) {
-        dst[i] = 0; dst[i+1] = 0; dst[i+2] = 0; dst[i+3] = src[i+3];
-        continue;
-      }
-
-      // Grayscale neighbors
-      const gray = (px) => 0.299 * src[px] + 0.587 * src[px+1] + 0.114 * src[px+2];
-
-      const tl = gray(idx(x-1, y-1, width));
-      const tc = gray(idx(x,   y-1, width));
-      const tr = gray(idx(x+1, y-1, width));
-      const ml = gray(idx(x-1, y,   width));
-      const mr = gray(idx(x+1, y,   width));
-      const bl = gray(idx(x-1, y+1, width));
-      const bc = gray(idx(x,   y+1, width));
-      const br = gray(idx(x+1, y+1, width));
-
-      const gx = -tl - 2*ml - bl + tr + 2*mr + br;
-      const gy = -tl - 2*tc - tr + bl + 2*bc + br;
-      const mag = clamp(Math.sqrt(gx*gx + gy*gy), 0, 255);
-
-      dst[i] = mag; dst[i+1] = mag; dst[i+2] = mag; dst[i+3] = src[i+3];
-    }
-    reportProgress(prog, workerIndex, y - startRow, totalRows);
-  }
-}
-
-// ─── Sharpen (unsharp mask kernel) ──────────────────────────────────────────
-
-function applySharpen(src, dst, width, height, startRow, endRow, strength, prog, workerIndex, totalRows) {
-  const s = clamp(strength ?? 1, 0, 5);
-  const k = [
-     0,      -s,        0,
-    -s,  1 + 4*s,      -s,
-     0,      -s,        0,
-  ];
-
-  for (let y = startRow; y < endRow; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = idx(x, y, width);
-      if (x === 0 || x === width - 1 || y === 0 || y === height - 1) {
-        dst[i] = src[i]; dst[i+1] = src[i+1]; dst[i+2] = src[i+2]; dst[i+3] = src[i+3];
-        continue;
-      }
-      for (let ch = 0; ch < 3; ch++) {
-        const sum =
-          k[0] * src[idx(x-1,y-1,width)+ch] + k[1] * src[idx(x,y-1,width)+ch] + k[2] * src[idx(x+1,y-1,width)+ch] +
-          k[3] * src[idx(x-1,y,  width)+ch] + k[4] * src[idx(x,y,  width)+ch] + k[5] * src[idx(x+1,y,  width)+ch] +
-          k[6] * src[idx(x-1,y+1,width)+ch] + k[7] * src[idx(x,y+1,width)+ch] + k[8] * src[idx(x+1,y+1,width)+ch];
-        dst[i+ch] = clamp(sum, 0, 255);
-      }
-      dst[i+3] = src[i+3];
-    }
-    reportProgress(prog, workerIndex, y - startRow, totalRows);
-  }
-}
-
-// ─── Grayscale ───────────────────────────────────────────────────────────────
-
-function applyGrayscale(src, dst, width, height, startRow, endRow, prog, workerIndex, totalRows) {
-  for (let y = startRow; y < endRow; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = idx(x, y, width);
-      const g = clamp(0.299 * src[i] + 0.587 * src[i+1] + 0.114 * src[i+2], 0, 255);
-      dst[i] = g; dst[i+1] = g; dst[i+2] = g; dst[i+3] = src[i+3];
-    }
-    reportProgress(prog, workerIndex, y - startRow, totalRows);
-  }
-}
-
-// ─── Invert ──────────────────────────────────────────────────────────────────
-
-function applyInvert(src, dst, width, height, startRow, endRow, prog, workerIndex, totalRows) {
-  for (let y = startRow; y < endRow; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = idx(x, y, width);
-      dst[i] = 255 - src[i]; dst[i+1] = 255 - src[i+1]; dst[i+2] = 255 - src[i+2]; dst[i+3] = src[i+3];
-    }
-    reportProgress(prog, workerIndex, y - startRow, totalRows);
-  }
-}
-
-// ─── Brightness / Contrast ───────────────────────────────────────────────────
-
-function applyBrightnessContrast(src, dst, width, height, startRow, endRow, brightness, contrast, prog, workerIndex, totalRows) {
-  const b = (brightness ?? 0);   // –100 to +100
-  const c = (contrast ?? 0);     // –100 to +100
-  const factor = (259 * (c + 255)) / (255 * (259 - c));
-
-  for (let y = startRow; y < endRow; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = idx(x, y, width);
-      for (let ch = 0; ch < 3; ch++) {
-        let v = src[i+ch] + b;
-        v = factor * (v - 128) + 128;
-        dst[i+ch] = clamp(v, 0, 255);
-      }
-      dst[i+3] = src[i+3];
-    }
-    reportProgress(prog, workerIndex, y - startRow, totalRows);
-  }
-}
-
-// ─── Pixelate ────────────────────────────────────────────────────────────────
-
-function applyPixelate(src, dst, width, height, startRow, endRow, blockSize, prog, workerIndex, totalRows) {
-  blockSize = clamp(blockSize, 2, 64);
-
-  for (let y = startRow; y < endRow; y++) {
-    for (let x = 0; x < width; x++) {
-      const bx = Math.floor(x / blockSize) * blockSize;
-      const by = Math.floor(y / blockSize) * blockSize;
-      const si = idx(clamp(bx, 0, width-1), clamp(by, 0, height-1), width);
-      const di = idx(x, y, width);
-      dst[di] = src[si]; dst[di+1] = src[si+1]; dst[di+2] = src[si+2]; dst[di+3] = src[si+3];
-    }
-    reportProgress(prog, workerIndex, y - startRow, totalRows);
-  }
-}
-
-// ─── Emboss ──────────────────────────────────────────────────────────────────
-
-function applyEmboss(src, dst, width, height, startRow, endRow, prog, workerIndex, totalRows) {
-  const k = [-2, -1, 0, -1, 1, 1, 0, 1, 2];
-
-  for (let y = startRow; y < endRow; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = idx(x, y, width);
-      if (x === 0 || x === width - 1 || y === 0 || y === height - 1) {
-        dst[i] = 128; dst[i+1] = 128; dst[i+2] = 128; dst[i+3] = src[i+3];
-        continue;
-      }
-      let r = 0, g = 0, b2 = 0;
-      let ki = 0;
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const ni = idx(x+dx, y+dy, width);
-          r  += k[ki] * src[ni];
-          g  += k[ki] * src[ni+1];
-          b2 += k[ki] * src[ni+2];
-          ki++;
-        }
-      }
-      dst[i]   = clamp(r  + 128, 0, 255);
-      dst[i+1] = clamp(g  + 128, 0, 255);
-      dst[i+2] = clamp(b2 + 128, 0, 255);
-      dst[i+3] = src[i+3];
-    }
-    reportProgress(prog, workerIndex, y - startRow, totalRows);
-  }
-}

@@ -10,7 +10,10 @@ export const workerConfig = {
     }
     return Math.max(
       this.poolSize.min,
-      Math.min(navigator.hardwareConcurrency || this.poolSize.default, this.poolSize.max)
+      Math.min(
+        navigator.hardwareConcurrency || this.poolSize.default,
+        this.poolSize.max,
+      ),
     );
   },
 };

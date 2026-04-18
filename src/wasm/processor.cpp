@@ -164,87 +164,65 @@ void applyEdgeDetection(const uint8_t* src, uint8_t* dst, int width, int height,
     }
 }
 
-void boxBlurH(const uint8_t* src, uint8_t* dst, int width, int startRow, int endRow, int radius) {
+void boxBlurH(const uint8_t* src, uint8_t* dst, int width, int height, int startRow, int endRow, int radius) {
     float iarr = 1.0f / (radius + radius + 1);
     for (int y = startRow; y < endRow; ++y) {
         for (int ch = 0; ch < 3; ++ch) {
-            int ti = idx(0, y, width) + ch;
-            int li = ti;
-            int ri = ti + radius * 4;
+            int val = 0;
+            for (int dx = -radius; dx <= radius; ++dx) {
+                int px = std::max(0, std::min(width - 1, dx));
+                val += src[idx(px, y, width) + ch];
+            }
+            dst[idx(0, y, width) + ch] = (uint8_t)(val * iarr + 0.5f);
 
-            int fv = src[ti];
-            int lv = src[idx(width - 1, y, width) + ch];
-            float val = (radius + 1) * fv;
-
-            for (int j = 0; j < radius; ++j) {
-                val += src[ti + j * 4];
-            }
-            for (int x = 0; x <= radius; ++x) {
-                val += src[ri] - fv;
-                dst[ti] = (uint8_t)(std::round(val * iarr));
-                ri += 4; ti += 4;
-            }
-            for (int x = radius + 1; x < width - radius; ++x) {
-                val += src[ri] - src[li];
-                dst[ti] = (uint8_t)(std::round(val * iarr));
-                li += 4; ri += 4; ti += 4;
-            }
-            for (int x = width - radius; x < width; ++x) {
-                val += lv - src[li];
-                dst[ti] = (uint8_t)(std::round(val * iarr));
-                li += 4; ti += 4;
+            for (int x = 1; x < width; ++x) {
+                int nextX = std::max(0, std::min(width - 1, x + radius));
+                int prevX = std::max(0, std::min(width - 1, x - radius - 1));
+                val += src[idx(nextX, y, width) + ch] - src[idx(prevX, y, width) + ch];
+                dst[idx(x, y, width) + ch] = (uint8_t)(val * iarr + 0.5f);
             }
         }
+        int i = idx(0, y, width);
         for (int x = 0; x < width; ++x) {
-            int i = idx(x, y, width);
             dst[i + 3] = src[i + 3];
+            i += 4;
         }
     }
 }
 
 void boxBlurV(const uint8_t* src, uint8_t* dst, int width, int height, int startRow, int endRow, int radius) {
     float iarr = 1.0f / (radius + radius + 1);
-    int capacity = width * height * 4;
     
     for (int x = 0; x < width; ++x) {
         for (int ch = 0; ch < 3; ++ch) {
-            int ti = idx(x, startRow, width) + ch;
-            int li = ti;
-            int ri = ti + radius * width * 4;
-
-            int fv = src[idx(x, startRow, width) + ch];
-            int lv = src[idx(x, endRow - 1, width) + ch];
-            float val = (radius + 1) * fv;
-
-            for (int j = 0; j < radius; ++j) {
-                val += src[idx(x, std::min(startRow + j, endRow - 1), width) + ch];
-            }
+            int val = 0;
             
-            for (int y = startRow; y <= std::min(startRow + radius, endRow - 1); ++y) {
-                int rval = (ri < capacity) ? src[ri] : lv;
-                val += rval - fv;
-                dst[ti] = (uint8_t)(std::round(val * iarr));
-                ri += width * 4; ti += width * 4;
+            // Initialize the rolling sum for the first row of this partition (startRow)
+            for (int dy = -radius; dy <= radius; ++dy) {
+                int py = std::max(0, std::min(height - 1, startRow + dy));
+                val += src[idx(x, py, width) + ch];
             }
-            for (int y = startRow + radius + 1; y < endRow - radius; ++y) {
-                val += src[ri] - src[li];
-                dst[ti] = (uint8_t)(std::round(val * iarr));
-                li += width * 4; ri += width * 4; ti += width * 4;
-            }
-            for (int y = std::max(endRow - radius, startRow + radius + 1); y < endRow; ++y) {
-                val += lv - src[li];
-                dst[ti] = (uint8_t)(std::round(val * iarr));
-                li += width * 4; ti += width * 4;
+
+            dst[idx(x, startRow, width) + ch] = (uint8_t)(val * iarr + 0.5f);
+
+            // Slide down the window
+            for (int y = startRow + 1; y < endRow; ++y) {
+                int nextY = std::max(0, std::min(height - 1, y + radius));
+                int prevY = std::max(0, std::min(height - 1, y - radius - 1));
+                
+                val += src[idx(x, nextY, width) + ch] - src[idx(x, prevY, width) + ch];
+                dst[idx(x, y, width) + ch] = (uint8_t)(val * iarr + 0.5f);
             }
         }
     }
 }
 
 EMSCRIPTEN_KEEPALIVE
-void applyGaussianBlur(const uint8_t* src, uint8_t* dst, uint8_t* tmp, int width, int height, int startRow, int endRow, int radius) {
+void applyGaussianBlur(const uint8_t* src, uint8_t* dst, uint8_t* tmp, int width, int height, int activeStartRow, int activeEndRow, int radius) {
     int passes = 3;
     
-    for (int y = startRow; y < endRow; ++y) {
+    // Initial copy only for the active partition
+    for (int y = activeStartRow; y < activeEndRow; ++y) {
         for (int x = 0; x < width; ++x) {
             int i = idx(x, y, width);
             dst[i] = src[i];
@@ -254,9 +232,28 @@ void applyGaussianBlur(const uint8_t* src, uint8_t* dst, uint8_t* tmp, int width
         }
     }
 
+    int currentStart = activeStartRow;
+    int currentEnd = activeEndRow;
+
     for (int pass = 0; pass < passes; ++pass) {
-        boxBlurH(dst, tmp, width, startRow, endRow, radius);
-        boxBlurV(tmp, dst, width, height, startRow, endRow, radius);
+        boxBlurH(dst, tmp, width, height, currentStart, currentEnd, radius);
+        
+        // Shrink the safe area for vertical blur because it reads currentStart - radius
+        // If we are at absolute image bounds (0 or height), clamping is conceptually perfect and we don't need to shrink.
+        int safeStart = currentStart;
+        if (currentStart > 0) safeStart = std::min(height, currentStart + radius);
+        
+        int safeEnd = currentEnd;
+        if (currentEnd < height) safeEnd = std::max(0, currentEnd - radius);
+        
+        // If the chunk is somehow extremely small (shouldn't happen with proper halo padding)
+        if (safeStart > safeEnd) safeStart = safeEnd;
+
+        boxBlurV(tmp, dst, width, height, safeStart, safeEnd, radius);
+        
+        // The next horizontal pass can now only safely write to this shrunken bounds.
+        currentStart = safeStart;
+        currentEnd = safeEnd;
     }
 }
 

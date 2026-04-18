@@ -7,7 +7,8 @@
     "dev": "nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
-    "postinstall": "nuxt prepare"
+    "postinstall": "nuxt prepare",
+    "build:wasm": "docker build -t filter-wasm-builder . && docker run --rm -v \"%cd%:/src\" filter-wasm-builder bash ./build-wasm.sh"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.2",

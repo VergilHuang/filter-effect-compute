@@ -59,7 +59,7 @@ self.onmessage = function (e) {
     // Determine the halo region (Padding) needed
     let halo = 0;
     if (filter === "gaussian-blur") {
-      halo = params.radius | 0;
+      halo = (params.radius * 3) | 0; // 3 passes of box blur need 3x radius halo
     } else if (
       filter === "sharpen" ||
       filter === "edge-detection" ||

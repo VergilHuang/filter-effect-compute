@@ -66,10 +66,11 @@
 
 <script setup lang="ts">
 import { useImageProcessor } from '~/composables/useImageProcessor'
+import { workerConfig } from '~/config/worker.config'
 
 const processor   = useImageProcessor()
 const previewRef  = ref<{ canvasEl: HTMLCanvasElement | null } | null>(null)
-const workerCount = ref(Math.max(2, Math.min(navigator.hardwareConcurrency ?? 4, 8)))
+const workerCount = ref(workerConfig.getOptimalPoolSize())
 
 const hasImage = processor.hasImage
 

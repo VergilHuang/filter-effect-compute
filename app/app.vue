@@ -51,7 +51,7 @@
 
       <div class="flex items-center gap-6">
         <span class="text-xs" style="color: var(--color-text-purple)">
-          Pure Client-Side Image Filter Effect Compute Tech · WebAssembly · Web
+          Pure Client-Side Image Filter Effect Compute · WebAssembly · Web
           Workers
         </span>
         <div
@@ -77,6 +77,8 @@
           :is-processing="processor.isProcessing.value"
           :progress="processor.progress.value"
           :has-image="processor.hasImage.value"
+          :native-width="processor.nativeWidth.value"
+          :native-height="processor.nativeHeight.value"
           @file="handleFile"
         />
       </section>
@@ -111,12 +113,14 @@ import { useImageProcessor } from "~/composables/useImageProcessor";
 import { workerConfig } from "~/config/worker.config";
 
 const processor = useImageProcessor();
-const previewRef = ref<{ canvasEl: HTMLCanvasElement | null } | null>(null);
+const previewRef = ref<{
+  canvasEl: HTMLCanvasElement | null;
+} | null>(null);
 const workerCount = ref(workerConfig.getOptimalPoolSize());
 
 const hasImage = processor.hasImage;
 
-// Wire the canvas element into the processor
+// Wire canvas element into the processor
 watch(
   () => previewRef.value?.canvasEl,
   (el) => {

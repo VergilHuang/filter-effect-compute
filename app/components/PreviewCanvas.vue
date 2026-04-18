@@ -1,7 +1,7 @@
 <template>
   <div
     class="relative flex items-center justify-center w-full h-full overflow-hidden"
-    style="background: var(--color-surface);"
+    style="background: var(--color-surface)"
     @dragover.prevent="isDragging = true"
     @dragleave.prevent="isDragging = false"
     @drop.prevent="handleDrop"
@@ -17,37 +17,68 @@
       @click="triggerInput"
     >
       <!-- Corner marks -->
-      <span v-for="pos in ['top-0 left-0','top-0 right-0','bottom-0 left-0','bottom-0 right-0']" :key="pos"
+      <span
+        v-for="pos in [
+          'top-0 left-0',
+          'top-0 right-0',
+          'bottom-0 left-0',
+          'bottom-0 right-0',
+        ]"
+        :key="pos"
         class="absolute w-3 h-3 pointer-events-none"
         :class="pos"
-        style="border: 1px solid var(--color-amber); opacity: 0.6;"
+        style="border: 1px solid var(--color-amber); opacity: 0.6"
       />
 
       <div class="flex flex-col items-center gap-4 pointer-events-none">
-        <svg width="40" height="40" viewBox="0 0 40 40" fill="none" aria-hidden="true">
-          <rect x="1" y="1" width="38" height="38" stroke="currentColor" stroke-width="1" stroke-dasharray="4 2"
-            :style="{ color: isDragging ? 'var(--color-amber)' : 'var(--color-border-bright)' }"/>
-          <path d="M20 13 L20 27 M13 20 L27 20"
-            :stroke="isDragging ? 'var(--color-amber)' : 'var(--color-text-muted)'"
-            stroke-width="1.5" stroke-linecap="square"/>
+        <svg
+          width="40"
+          height="40"
+          viewBox="0 0 40 40"
+          fill="none"
+          aria-hidden="true"
+        >
+          <rect
+            x="1"
+            y="1"
+            width="38"
+            height="38"
+            stroke="currentColor"
+            stroke-width="1"
+            stroke-dasharray="4 2"
+            :style="{
+              color: isDragging
+                ? 'var(--color-amber)'
+                : 'var(--color-border-bright)',
+            }"
+          />
+          <path
+            d="M20 13 L20 27 M13 20 L27 20"
+            :stroke="
+              isDragging ? 'var(--color-amber)' : 'var(--color-text-muted)'
+            "
+            stroke-width="1.5"
+            stroke-linecap="square"
+          />
         </svg>
 
-        <div class="text-center" style="color: var(--color-text-muted);">
+        <div class="text-center" style="color: var(--color-text-muted)">
           <div class="text-xs uppercase tracking-widest mb-1">拖曳圖片至此</div>
-          <div class="text-xs" style="color: var(--color-text-dim);">或點擊選取檔案</div>
-          <div class="text-xs mt-3" style="color: var(--color-text-dim);">
+          <div class="text-xs" style="color: var(--color-text-dim)">
+            或點擊選取檔案
+          </div>
+          <div class="text-xs mt-3" style="color: var(--color-text-dim)">
             JPEG · PNG · WebP · HEIC
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Canvas -->
+    <!-- Single Canvas - Full Resolution, Rendered via CSS scaling -->
     <canvas
       ref="canvasEl"
-      class="max-w-full max-h-full object-contain"
       :class="{ 'opacity-40': isProcessing }"
-      style="image-rendering: pixelated; display: block;"
+      :style="displayStyle"
     />
 
     <!-- Processing overlay -->
@@ -57,7 +88,10 @@
         class="absolute inset-0 flex flex-col items-end justify-end p-4 pointer-events-none"
       >
         <!-- Progress bar -->
-        <div class="w-full" style="background: var(--color-border); height: 2px;">
+        <div
+          class="w-full"
+          style="background: var(--color-border); height: 2px"
+        >
           <div
             class="h-full transition-all duration-100"
             :style="{
@@ -67,7 +101,10 @@
             }"
           />
         </div>
-        <div class="mt-1 text-xs tabular-nums" style="color: var(--color-amber);">
+        <div
+          class="mt-1 text-xs tabular-nums"
+          style="color: var(--color-amber)"
+        >
           {{ progress }}%
         </div>
       </div>
@@ -86,43 +123,71 @@
 
 <script setup lang="ts">
 const props = defineProps<{
-  isProcessing: boolean
-  progress: number
-  hasImage: boolean
-}>()
+  isProcessing: boolean;
+  progress: number;
+  hasImage: boolean;
+  nativeWidth: number;
+  nativeHeight: number;
+}>();
 
 const emit = defineEmits<{
-  (e: 'file', file: File): void
-}>()
+  (e: "file", file: File): void;
+}>();
 
-const canvasEl   = ref<HTMLCanvasElement | null>(null)
-const inputEl    = ref<HTMLInputElement | null>(null)
-const isDragging = ref(false)
+const canvasEl = ref<HTMLCanvasElement | null>(null);
+const inputEl = ref<HTMLInputElement | null>(null);
+const isDragging = ref(false);
 
-const hasImage = computed(() => props.hasImage)
+const hasImage = computed(() => props.hasImage);
 
-// Expose canvas element to parent
-defineExpose({ canvasEl })
+// 根據需求限制顯示尺寸：最大 600px，且不超過原圖尺寸（避免模糊）
+const displayStyle = computed(() => {
+  if (!props.hasImage || !props.nativeWidth) return { display: "none" };
+
+  const PREVIEW_ZOON_MAX = 600;
+  // 計算在不超過 600x600 下的縮放比例
+  const ratio = Math.min(
+    1,
+    PREVIEW_ZOON_MAX / props.nativeWidth,
+    PREVIEW_ZOON_MAX / props.nativeHeight,
+  );
+
+  return {
+    display: "block",
+    width: `${Math.round(props.nativeWidth * ratio)}px`,
+    height: `${Math.round(props.nativeHeight * ratio)}px`,
+    imageRendering: "auto" as const,
+  };
+});
+
+// Expose canvas to parent
+defineExpose({ canvasEl });
 
 function triggerInput() {
-  inputEl.value?.click()
+  inputEl.value?.click();
 }
 
 function handleFileInput(e: Event) {
-  const f = (e.target as HTMLInputElement).files?.[0]
-  if (f) emit('file', f)
+  const f = (e.target as HTMLInputElement).files?.[0];
+  if (f) emit("file", f);
   // Reset so same file can be re-selected
-  ;(e.target as HTMLInputElement).value = ''
+  (e.target as HTMLInputElement).value = "";
 }
 
 function handleDrop(e: DragEvent) {
-  isDragging.value = false
-  const f = e.dataTransfer?.files?.[0]
-  if (f) emit('file', f)
+  isDragging.value = false;
+  const f = e.dataTransfer?.files?.[0];
+  if (f) emit("file", f);
 }
 </script>
 
 <style scoped>
-.fade-enter-active, .fade-leave-active { transition: opacity 0.3s; }
-.fade-enter-from, .fade-leave-to       { opacity: 0; }
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
 </style>

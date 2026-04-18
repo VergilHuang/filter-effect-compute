@@ -13,8 +13,8 @@
   --color-amber-dim: #92500a;
   --color-amber-glow: rgba(217, 119, 6, 0.08);
   --color-text: #e2dcd4;
-  --color-text-muted: #6b6460;
-  --color-text-dim: #3d3a36;
+  --color-text-muted: #847e79;
+  --color-text-dim: #8a8a8a;
   --color-text-purple: #9333ea;
   --color-danger: #b91c1c;
   --color-success: #65a30d;
@@ -42,6 +42,8 @@ body {
 
 #__nuxt {
   height: 100%;
+  position: relative;
+  z-index: 1;
 }
 
 /* Scrollbar */
@@ -69,7 +71,7 @@ body::before {
     rgba(0, 0, 0, 0.03) 4px
   );
   pointer-events: none;
-  z-index: 9999;
+  z-index: 0;
 }
 
 /* Amber glow focus ring */

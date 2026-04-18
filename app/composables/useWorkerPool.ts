@@ -36,7 +36,10 @@ export function useWorkerPool() {
 
     for (let i = 0; i < poolSize(); i++) {
       const p = new Promise<void>((resolve, reject) => {
-        const worker = new Worker("/workers/processor.worker.js");
+        // 加上 t 參數來強制瀏覽器重新抓取 worker 腳本
+        const worker = new Worker(
+          `/workers/processor.worker.js?t=${Date.now()}`,
+        );
         worker.onmessage = (e) => {
           if (e.data.type === "ready") {
             slots.value = [...slots.value, { worker, busy: false }];

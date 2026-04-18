@@ -23,7 +23,7 @@ self.Module = {
 };
 
 // Import the generated Wasm glue code
-importScripts("/wasm/processor.js");
+importScripts("/wasm/processor.cbae64d8.js");
 
 self.onmessage = function (e) {
   const { type, payload } = e.data;

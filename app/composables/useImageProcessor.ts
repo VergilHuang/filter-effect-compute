@@ -86,14 +86,13 @@ export function useImageProcessor() {
   const selectedFilter = ref<FilterId>("gaussian-blur");
   const filterParams = ref<Record<string, number>>({});
 
-  // Canvas refs managed by the component; we hold a ref to the element
   const previewCanvas = ref<HTMLCanvasElement | null>(null);
 
   // Internal SABs — released on clear/new-upload
   let currentInputSab: SharedArrayBuffer | null = null;
   let currentOutputSab: SharedArrayBuffer | null = null;
-  let imageWidth = 0;
-  let imageHeight = 0;
+  const nativeWidth = ref(0);
+  const nativeHeight = ref(0);
 
   // ── Init ───────────────────────────────────────────────────────────────────
   async function initEngine() {
@@ -159,24 +158,25 @@ export function useImageProcessor() {
 
     URL.revokeObjectURL(url);
 
-    imageWidth = img.naturalWidth;
-    imageHeight = img.naturalHeight;
+    nativeWidth.value = img.naturalWidth;
+    nativeHeight.value = img.naturalHeight;
 
     if (!previewCanvas.value) return;
     const canvas = previewCanvas.value;
-    canvas.width = imageWidth;
-    canvas.height = imageHeight;
+    canvas.width = nativeWidth.value;
+    canvas.height = nativeHeight.value;
     const ctx = canvas.getContext("2d")!;
     ctx.drawImage(img, 0, 0);
-    const imageData = ctx.getImageData(0, 0, imageWidth, imageHeight);
+    const imageData = ctx.getImageData(0, 0, nativeWidth.value, nativeHeight.value);
 
     // Allocate SABs
-    const byteLen = imageWidth * imageHeight * 4;
+    const byteLen = nativeWidth.value * nativeHeight.value * 4;
     currentInputSab = new SharedArrayBuffer(byteLen);
     currentOutputSab = new SharedArrayBuffer(byteLen);
 
     const view = new Uint8ClampedArray(currentInputSab);
     view.set(imageData.data);
+
     hasImage.value = true;
   }
 
@@ -207,8 +207,8 @@ export function useImageProcessor() {
       await pool.process({
         inputSab: currentInputSab,
         outputSab: currentOutputSab!,
-        width: imageWidth,
-        height: imageHeight,
+        width: nativeWidth.value,
+        height: nativeHeight.value,
         filter: selectedFilter.value,
         params: toRaw(filterParams.value),
         progressSab,
@@ -222,7 +222,7 @@ export function useImageProcessor() {
       // ImageData requires a non-shared buffer — copy out of the SAB
       const shared = new Uint8ClampedArray(currentOutputSab!);
       const plain = new Uint8ClampedArray(shared);
-      const result = new ImageData(plain, imageWidth, imageHeight);
+      const result = new ImageData(plain, nativeWidth.value, nativeHeight.value);
       ctx.putImageData(result, 0, 0);
 
       hasResult.value = true;
@@ -258,6 +258,7 @@ export function useImageProcessor() {
     );
   }
 
+
   // ── Clear ──────────────────────────────────────────────────────────────────
   function clearImage() {
     freeSabs();
@@ -276,7 +277,6 @@ export function useImageProcessor() {
       previewCanvas.value.width = 0;
       previewCanvas.value.height = 0;
     }
-
     forceRebuildWorkers();
   }
 
@@ -303,6 +303,8 @@ export function useImageProcessor() {
     errorMessage,
     selectedFilter,
     filterParams,
+    nativeWidth,
+    nativeHeight,
     previewCanvas,
     FILTERS,
     initEngine,

@@ -190,16 +190,23 @@ void boxBlurH(const uint8_t* src, uint8_t* dst, int width, int height, int start
     }
 }
 
-void boxBlurV(const uint8_t* src, uint8_t* dst, int width, int height, int startRow, int endRow, int radius) {
+void boxBlurV(const uint8_t* src, uint8_t* dst, int width, int height,
+              int startRow, int endRow, int radius,
+              int validStart, int validEnd) {
     float iarr = 1.0f / (radius + radius + 1);
     
     for (int x = 0; x < width; ++x) {
         for (int ch = 0; ch < 3; ++ch) {
             int val = 0;
             
-            // Initialize the rolling sum for the first row of this partition (startRow)
+            // Initialize rolling sum for startRow.
+            // Clamp both by image bounds AND by the horizontally-blurred valid region.
+            // Reading from outside [validStart, validEnd) would consume uninitialized
+            // or stale data (other workers' rows), causing horizontal banding.
             for (int dy = -radius; dy <= radius; ++dy) {
-                int py = std::max(0, std::min(height - 1, startRow + dy));
+                int py = startRow + dy;
+                py = std::max(0, std::min(height - 1, py));   // image boundary
+                py = std::max(validStart, std::min(validEnd - 1, py)); // halo boundary
                 val += src[idx(x, py, width) + ch];
             }
 
@@ -207,8 +214,14 @@ void boxBlurV(const uint8_t* src, uint8_t* dst, int width, int height, int start
 
             // Slide down the window
             for (int y = startRow + 1; y < endRow; ++y) {
-                int nextY = std::max(0, std::min(height - 1, y + radius));
-                int prevY = std::max(0, std::min(height - 1, y - radius - 1));
+                // clamp nextY / prevY by both image and valid bounds
+                int nextY = y + radius;
+                nextY = std::max(0, std::min(height - 1, nextY));
+                nextY = std::max(validStart, std::min(validEnd - 1, nextY));
+
+                int prevY = y - radius - 1;
+                prevY = std::max(0, std::min(height - 1, prevY));
+                prevY = std::max(validStart, std::min(validEnd - 1, prevY));
                 
                 val += src[idx(x, nextY, width) + ch] - src[idx(x, prevY, width) + ch];
                 dst[idx(x, y, width) + ch] = (uint8_t)(val * iarr + 0.5f);
@@ -236,22 +249,24 @@ void applyGaussianBlur(const uint8_t* src, uint8_t* dst, uint8_t* tmp, int width
     int currentEnd = activeEndRow;
 
     for (int pass = 0; pass < passes; ++pass) {
+        // Horizontal blur: writes [currentStart, currentEnd) into tmp
         boxBlurH(dst, tmp, width, height, currentStart, currentEnd, radius);
         
-        // Shrink the safe area for vertical blur because it reads currentStart - radius
-        // If we are at absolute image bounds (0 or height), clamping is conceptually perfect and we don't need to shrink.
+        // After horizontal blur, tmp is only valid for [currentStart, currentEnd)
+        // Shrink the output range so boxBlurV never reads outside that region
         int safeStart = currentStart;
         if (currentStart > 0) safeStart = std::min(height, currentStart + radius);
         
         int safeEnd = currentEnd;
         if (currentEnd < height) safeEnd = std::max(0, currentEnd - radius);
         
-        // If the chunk is somehow extremely small (shouldn't happen with proper halo padding)
         if (safeStart > safeEnd) safeStart = safeEnd;
 
-        boxBlurV(tmp, dst, width, height, safeStart, safeEnd, radius);
+        // Pass validStart/validEnd = currentStart/currentEnd so the rolling
+        // window never reads rows that boxBlurH hasn't written.
+        boxBlurV(tmp, dst, width, height, safeStart, safeEnd, radius,
+                 currentStart, currentEnd);
         
-        // The next horizontal pass can now only safely write to this shrunken bounds.
         currentStart = safeStart;
         currentEnd = safeEnd;
     }

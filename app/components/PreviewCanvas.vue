@@ -6,6 +6,10 @@
     @dragleave.prevent="isDragging = false"
     @drop.prevent="handleDrop"
   >
+    <!-- Blueprint grid background -->
+    <div
+      class="absolute inset-0 blueprint-grid pointer-events-none opacity-40"
+    />
     <!-- Empty state / drop zone -->
     <div
       v-if="!hasImage"
@@ -13,6 +17,10 @@
       :style="{
         border: `1px dashed ${isDragging ? 'var(--color-amber)' : 'var(--color-border-bright)'}`,
         background: isDragging ? 'var(--color-amber-glow)' : 'transparent',
+        transform: isDragging ? 'scale(0.99)' : 'scale(1)',
+        transition: 'transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)',
+        backfaceVisibility: 'hidden',
+        '-webkit-font-smoothing': 'antialiased',
       }"
       @click="triggerInput"
     >
@@ -25,9 +33,14 @@
           'bottom-0 right-0',
         ]"
         :key="pos"
-        class="absolute w-3 h-3 pointer-events-none"
+        class="absolute w-3 h-3 pointer-events-none transition-all duration-300"
         :class="pos"
-        style="border: 1px solid var(--color-amber); opacity: 0.6"
+        :style="{
+          border: '1px solid var(--color-amber)',
+          opacity: isDragging ? 1 : 0.4,
+          transform: isDragging ? 'scale(1.2)' : 'scale(1)',
+          boxShadow: isDragging ? '0 0 8px var(--color-amber)' : 'none',
+        }"
       />
 
       <div class="flex flex-col items-center gap-4 pointer-events-none">
@@ -75,11 +88,18 @@
     </div>
 
     <!-- Single Canvas - Full Resolution, Rendered via CSS scaling -->
-    <canvas
-      ref="canvasEl"
-      :class="{ 'opacity-40': isProcessing }"
-      :style="displayStyle"
-    />
+    <div class="relative z-10">
+      <canvas
+        ref="canvasEl"
+        :class="{ 'opacity-60': isProcessing }"
+        :style="displayStyle"
+      />
+      <!-- Scanning Laser (No transition for instant shutdown, delayed start via showLaser) -->
+      <div
+        v-if="showLaser"
+        class="absolute inset-x-0 scan-laser z-20 pointer-events-none"
+      />
+    </div>
 
     <!-- Processing overlay -->
     <Transition name="fade">
@@ -137,6 +157,27 @@ const emit = defineEmits<{
 const canvasEl = ref<HTMLCanvasElement | null>(null);
 const inputEl = ref<HTMLInputElement | null>(null);
 const isDragging = ref(false);
+const DELAY_TIME = 300; // 延遲時間
+
+const showLaser = ref(false);
+let laserTimer: ReturnType<typeof setTimeout> | null = null;
+
+watch(
+  () => props.isProcessing,
+  (val) => {
+    if (val) {
+      laserTimer = setTimeout(() => {
+        if (props.isProcessing) showLaser.value = true;
+      }, DELAY_TIME);
+    } else {
+      if (laserTimer) {
+        clearTimeout(laserTimer);
+        laserTimer = null;
+      }
+      showLaser.value = false;
+    }
+  },
+);
 
 const hasImage = computed(() => props.hasImage);
 
@@ -189,5 +230,39 @@ function handleDrop(e: DragEvent) {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+.blueprint-grid {
+  background-image: radial-gradient(
+    var(--color-border-bright) 1px,
+    transparent 1px
+  );
+  background-size: 32px 32px;
+  background-color: rgba(0, 0, 0, 0.2);
+}
+
+.scan-laser {
+  height: 40%;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(217, 119, 6, 0.05) 40%,
+    rgba(217, 119, 6, 0.3) 85%,
+    var(--color-amber) 99%,
+    transparent 100%
+  );
+  top: -40%;
+  animation: scan 1.8s linear infinite;
+  filter: blur(0.5px);
+  box-shadow: 0 10px 30px -5px var(--color-amber);
+}
+
+@keyframes scan {
+  0% {
+    top: -40%;
+  }
+  100% {
+    top: 100%;
+  }
 }
 </style>

@@ -1,7 +1,7 @@
 export const workerConfig = {
   poolSize: {
     min: 2,
-    max: 8,
+    max: 4,
     default: 4,
   },
   getOptimalPoolSize(): number {
